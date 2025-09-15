@@ -25,6 +25,10 @@ export const generateTryOnImage = async (
   clothingFile: File
 ): Promise<GeneratedImageResult> => {
 
+  if (!PROXY_URL) {
+    throw new Error("代理URL尚未配置。");
+  }
+
   try {
     const [personImage, clothingImage] = await Promise.all([
       fileToBase64(personFile),
@@ -56,7 +60,14 @@ export const generateTryOnImage = async (
 
     if (!response.ok) {
        const errorText = await response.text();
-       throw new Error(`代理服务器错误 (${response.status}): ${errorText}`);
+       // Try to parse error text as JSON for more detailed Gemini errors
+       try {
+         const errorJson = JSON.parse(errorText);
+         const message = errorJson?.error?.message || errorText;
+         throw new Error(`代理服务器错误 (${response.status}): ${message}`);
+       } catch (e) {
+         throw new Error(`代理服务器错误 (${response.status}): ${errorText}`);
+       }
     }
 
     const data = await response.json();
@@ -66,7 +77,7 @@ export const generateTryOnImage = async (
 
 
     if (!imagePart || !imagePart.inlineData) {
-      const errorDetail = textPart?.text || JSON.stringify(data);
+      const errorDetail = textPart?.text || data.candidates?.[0]?.finishReason || JSON.stringify(data);
       throw new Error(`AI未能返回图片。详情: ${errorDetail}`);
     }
 
@@ -80,7 +91,7 @@ export const generateTryOnImage = async (
   } catch (error) {
     console.error("调用代理时出错:", error);
     if (error instanceof Error) {
-        throw new Error(`通过代理生成图片失败: ${error.message}`);
+        throw new Error(`${error.message}`);
     }
     throw new Error("通过代理生成图片失败，发生未知错误。");
   }
