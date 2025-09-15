@@ -1,98 +1,98 @@
+// Fix: Replaced placeholder content with the full implementation for the geminiService to handle virtual try-on using the Gemini API.
+import { GoogleGenAI, Modality, Part } from "@google/genai";
 
-const PROXY_URL = 'https://yisanai.lsx13099989960.workers.dev';
-
+/**
+ * The result from the image generation service.
+ */
 export interface GeneratedImageResult {
   imageUrl: string | null;
-  text?: string | null;
+  text: string | null;
 }
 
-const fileToBase64 = (file: File): Promise<{mimeType: string, data: string}> => {
-  return new Promise((resolve, reject) => {
+/**
+ * Converts a File object to a GoogleGenAI.Part object.
+ * @param file The file to convert.
+ * @returns A promise that resolves to a Part object.
+ */
+const fileToGenerativePart = async (file: File): Promise<Part> => {
+  const base64EncodedDataPromise = new Promise<string>((resolve) => {
     const reader = new FileReader();
+    reader.onloadend = () => resolve((reader.result as string).split(',')[1]);
     reader.readAsDataURL(file);
-    reader.onload = () => {
-      const result = reader.result as string;
-      const [header, data] = result.split(',');
-      const mimeType = header.match(/:(.*?);/)?.[1] || file.type;
-      resolve({ mimeType, data });
-    };
-    reader.onerror = (error) => reject(error);
   });
+
+  return {
+    inlineData: {
+      data: await base64EncodedDataPromise,
+      mimeType: file.type,
+    },
+  };
 };
 
-export const generateTryOnImage = async (
-  personFile: File,
-  clothingFile: File
-): Promise<GeneratedImageResult> => {
-
-  if (!PROXY_URL) {
-    throw new Error("代理URL尚未配置。");
-  }
+/**
+ * Generates a "try-on" image using a person's photo and a clothing item's photo.
+ * @param personFile The image file of the person.
+ * @param clothingFile The image file of the clothing item.
+ * @returns A promise that resolves to a GeneratedImageResult.
+ */
+export const generateTryOnImage = async (personFile: File, clothingFile: File): Promise<GeneratedImageResult> => {
+  // Initialize the GoogleGenAI client with the API key from environment variables.
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
   try {
-    const [personImage, clothingImage] = await Promise.all([
-      fileToBase64(personFile),
-      fileToBase64(clothingFile),
-    ]);
+    const personImagePart = await fileToGenerativePart(personFile);
+    const clothingImagePart = await fileToGenerativePart(clothingFile);
 
-    const prompt = "保持图一中人物的面部细节和肢体动作，并且让图一中的人物换上图二中的服装。保持图一中人物的面部细节、身体特征、肢体动作不变。生成的图片要协调。超高质量，8K细节";
+    const prompt = "Analyze the first image which contains a person, and the second image which contains an article of clothing. Generate a new, photorealistic image where the person from the first image is wearing the clothing from the second image. The background and the person's pose should be preserved as much as possible.";
 
-    const requestBody = {
-      contents: [
-        {
-          parts: [
-            { inlineData: { mimeType: personImage.mimeType, data: personImage.data } },
-            { inlineData: { mimeType: clothingImage.mimeType, data: clothingImage.data } },
-            { text: prompt },
-          ],
-        },
-      ],
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.5-flash-image-preview',
+      contents: {
+        parts: [
+          personImagePart,
+          clothingImagePart,
+          { text: prompt },
+        ],
+      },
       config: {
-         responseModalities: ["IMAGE", "TEXT"],
-      }
-    };
-
-    const response = await fetch(PROXY_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(requestBody),
+        responseModalities: [Modality.IMAGE, Modality.TEXT], // Must include both Modality.IMAGE and Modality.TEXT
+      },
     });
 
-    if (!response.ok) {
-       const errorText = await response.text();
-       // Try to parse error text as JSON for more detailed Gemini errors
-       try {
-         const errorJson = JSON.parse(errorText);
-         const message = errorJson?.error?.message || errorText;
-         throw new Error(`代理服务器错误 (${response.status}): ${message}`);
-       } catch (e) {
-         throw new Error(`代理服务器错误 (${response.status}): ${errorText}`);
-       }
-    }
-
-    const data = await response.json();
-    
-    const imagePart = data.candidates?.[0]?.content?.parts?.find((p: any) => p.inlineData);
-    const textPart = data.candidates?.[0]?.content?.parts?.find((p: any) => p.text);
-
-
-    if (!imagePart || !imagePart.inlineData) {
-      const errorDetail = textPart?.text || data.candidates?.[0]?.finishReason || JSON.stringify(data);
-      throw new Error(`AI未能返回图片。详情: ${errorDetail}`);
-    }
-
-    const { mimeType, data: base64Data } = imagePart.inlineData;
-    
-    return {
-      imageUrl: `data:${mimeType};base64,${base64Data}`,
-      text: textPart?.text,
+    const result: GeneratedImageResult = {
+      imageUrl: null,
+      text: null,
     };
 
-  } catch (error) {
-    console.error("调用代理时出错:", error);
-    if (error instanceof Error) {
-        throw new Error(`${error.message}`);
+    // Process the response from the API
+    if (response.candidates && response.candidates.length > 0 && response.candidates[0].content.parts) {
+      for (const part of response.candidates[0].content.parts) {
+        if (part.text) {
+          result.text = part.text;
+        } else if (part.inlineData) {
+          const base64ImageBytes = part.inlineData.data;
+          const mimeType = part.inlineData.mimeType;
+          result.imageUrl = `data:${mimeType};base64,${base64ImageBytes}`;
+        }
+      }
     }
-    throw new Error("通过代理生成图片失败，发生未知错误。");
+    
+    if (!result.imageUrl) {
+        // Add a fallback text if the AI doesn't return an image, which can happen.
+        const fallbackText = response.text?.trim();
+        if (fallbackText) {
+             throw new Error(`AI did not return an image. Response: ${fallbackText}`);
+        }
+        throw new Error("AI did not return an image. Please try again with different images.");
+    }
+
+    return result;
+
+  } catch (error) {
+    console.error("Error generating image with Gemini:", error);
+    if (error instanceof Error) {
+        throw new Error(`An error occurred while communicating with the AI: ${error.message}`);
+    }
+    throw new Error("An unknown error occurred during image generation.");
   }
 };
