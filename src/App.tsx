@@ -40,6 +40,10 @@ const App: React.FC = () => {
       <Header />
       <main className="container mx-auto p-4 sm:p-6 lg:p-8">
         <div className="w-full max-w-4xl mx-auto space-y-8">
+          <div className="text-center p-6 bg-white/70 backdrop-blur-sm rounded-2xl shadow-lg border border-slate-200/50">
+            <h2 className="text-2xl font-bold text-slate-700">简单两步，即刻换装</h2>
+            <p className="mt-2 text-slate-500">上传您想要试穿的人物和服装照片，AI 将为您生成效果图。</p>
+          </div>
           <div className="grid md:grid-cols-2 gap-8">
             <ImageUploader title="1. 上传您的照片" onFileSelect={setPersonFile} />
             <ImageUploader title="2. 上传服装照片" onFileSelect={setClothingFile} />
