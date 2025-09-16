@@ -1,91 +1,118 @@
+// Fix: Replaced placeholder content with the full implementation for the geminiService to handle virtual try-on using the Gemini API.
+import { Part } from "@google/genai";
 
-// The user-provided proxy URL for the Cloudflare Worker
-const PROXY_URL = "https://yisanai.lsx13099989960.workers.dev";
-
-interface ImageData {
-  data: string;
-  mimeType: string;
+/**
+ * The result from the image generation service.
+ */
+export interface GeneratedImageResult {
+  imageUrl: string | null;
+  text: string | null;
 }
 
-// Define the structure of the Gemini API response for type safety
-interface GeminiPart {
-    text?: string;
-    inlineData?: {
-        mimeType: string;
-        data: string;
-    };
-}
+/**
+ * Converts a File object to a GoogleGenAI.Part object.
+ * @param file The file to convert.
+ * @returns A promise that resolves to a Part object.
+ */
+const fileToGenerativePart = async (file: File): Promise<Part> => {
+  const base64EncodedDataPromise = new Promise<string>((resolve) => {
+    const reader = new FileReader();
+    reader.onloadend = () => resolve((reader.result as string).split(",")[1]);
+    reader.readAsDataURL(file);
+  });
 
-interface GeminiContent {
-    parts: GeminiPart[];
-    role?: string;
-}
-
-interface GeminiCandidate {
-    content: GeminiContent;
-}
-
-interface GeminiResponse {
-    candidates: GeminiCandidate[];
-}
-
-export async function generateTryOnImage(modelImage: ImageData, garmentImage: ImageData): Promise<string | null> {
-  const parts = [
-    {
-      inlineData: {
-        mimeType: modelImage.mimeType,
-        data: modelImage.data,
-      },
+  return {
+    inlineData: {
+      data: await base64EncodedDataPromise,
+      mimeType: file.type,
     },
-    {
-      inlineData: {
-        mimeType: garmentImage.mimeType,
-        data: garmentImage.data,
-      },
-    },
-    {
-      text: "让图一中的人物换上图二中的服装，保持图一中人物的面部特征和动作不变。超级精细的处理。8K质量。",
-    },
-  ];
-
-  // The Gemini API expects a `contents` array, where each item has a `parts` array.
-  const requestBody = {
-    contents: [{ parts: parts }],
   };
+};
+
+/**
+ * Generates a "try-on" image using a person's photo and a clothing item's photo.
+ * @param personFile The image file of the person.
+ * @param clothingFile The image file of the clothing item.
+ * @returns A promise that resolves to a GeneratedImageResult.
+ */
+export const generateTryOnImage = async (
+  personFile: File,
+  clothingFile: File
+): Promise<GeneratedImageResult> => {
+  // This implementation uses a proxy worker to securely call the Gemini API.
+  const PROXY_URL = "https://yisanai.lsx13099989960.workers.dev";
+
+  if (!PROXY_URL) {
+    throw new Error("代理URL尚未配置。");
+  }
 
   try {
+    const personImagePart = await fileToGenerativePart(personFile);
+    const clothingImagePart = await fileToGenerativePart(clothingFile);
+
+    const prompt =
+      "保持图一中人物的面部细节和肢体动作，并且让图一中的人物换上图二中的服装。保持图一中人物的面部细节、身体特征、肢体动作不变。生成的图片要协调。超高质量，8K细节";
+
+    // ✅ 删除 generationConfig，保持最简请求体
+    const requestBody = {
+      model: "models/gemini-2.5-flash-image-preview",
+      contents: [
+        {
+          parts: [personImagePart, clothingImagePart, { text: prompt }],
+        },
+      ],
+    };
+
     const response = await fetch(PROXY_URL, {
-      method: 'POST',
+      method: "POST",
       headers: {
-        'Content-Type': 'application/json',
+        "Content-Type": "application/json",
       },
       body: JSON.stringify(requestBody),
     });
 
     if (!response.ok) {
-        const errorBody = await response.json().catch(() => ({ error: { message: 'Unknown proxy error' } }));
-        const errorMessage = errorBody?.error?.message || `代理服务器错误 (${response.status}): ${response.statusText}`;
-        throw new Error(errorMessage);
-    }
-
-    const responseData: GeminiResponse = await response.json();
-    
-    // Extract the generated image from the response
-    if (responseData.candidates?.[0]?.content?.parts) {
-      for (const part of responseData.candidates[0].content.parts) {
-        if (part.inlineData?.data) {
-          return part.inlineData.data; // This is the base64 encoded image string
-        }
+      const errorBody = await response.text();
+      try {
+        const errorJson = JSON.parse(errorBody);
+        const message = errorJson?.error?.message || errorBody;
+        throw new Error(`代理服务器错误 (${response.status}): ${message}`);
+      } catch {
+        throw new Error(`代理服务器错误 (${response.status}): ${errorBody}`);
       }
     }
 
-    return null; // Return null if no image was found
+    const responseData = await response.json();
 
-  } catch (error) {
-    console.error("Error calling proxy:", error);
-    if (error instanceof Error) {
-        throw new Error(error.message || "生成图片时发生网络错误或API调用失败。");
+    const result: GeneratedImageResult = {
+      imageUrl: null,
+      text: null,
+    };
+
+    // Gemini 会返回 candidates -> content -> parts
+    const candidate = responseData?.candidates?.[0];
+    const contentPart = candidate?.content?.parts?.[0];
+
+    if (contentPart?.inlineData) {
+      // 直接返回 base64 图片
+      const { data, mimeType } = contentPart.inlineData;
+      result.imageUrl = `data:${mimeType};base64,${data}`;
     }
-    throw new Error("生成过程中发生未知错误。");
+
+    if (contentPart?.text) {
+      result.text = contentPart.text;
+    }
+
+    if (!result.imageUrl) {
+      throw new Error("AI未能返回有效的图片。请尝试不同的图片或稍后再试。");
+    }
+
+    return result;
+  } catch (error) {
+    console.error("调用代理时出错:", error);
+    if (error instanceof Error) {
+      throw new Error(error.message);
+    }
+    throw new Error("通过代理生成图片失败。");
   }
-}
+};
