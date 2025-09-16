@@ -1,71 +1,125 @@
 
-import React, { useState, useCallback } from 'react';
-import { useDropzone } from 'react-dropzone';
-import UploadIcon from './icons/UploadIcon';
-import XCircleIcon from './icons/XCircleIcon';
+import React, { useState, useCallback, useRef } from 'react';
+import { UploadIcon } from './icons/UploadIcon';
+import { XCircleIcon } from './icons/XCircleIcon';
 
 interface ImageUploaderProps {
+  id: string;
   title: string;
-  onFileSelect: (file: File | null) => void;
+  onImageChange: (data: { file: File | null; base64: string | null; mimeType: string | null }) => void;
 }
 
-const ImageUploader: React.FC<ImageUploaderProps> = ({ title, onFileSelect }) => {
-  const [preview, setPreview] = useState<string | null>(null);
+/**
+ * Processes an image file by resizing it and converting it to a standard JPEG format.
+ * This ensures compatibility with the Gemini API and optimizes image size.
+ * @param file The image file to process.
+ * @returns A promise that resolves with the base64 encoded string and 'image/jpeg' MIME type.
+ */
+const processImage = (file: File): Promise<{ base64: string; mimeType: string }> => {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.readAsDataURL(file);
+    reader.onload = (event) => {
+      const img = new Image();
+      if (!event.target?.result) {
+        return reject(new Error("Failed to read file."));
+      }
+      img.src = event.target.result as string;
+      img.onload = () => {
+        const MAX_DIMENSION = 1024;
+        let { width, height } = img;
 
-  const onDrop = useCallback((acceptedFiles: File[]) => {
-    if (acceptedFiles && acceptedFiles.length > 0) {
-      const currentFile = acceptedFiles[0];
-      onFileSelect(currentFile);
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        setPreview(reader.result as string);
+        // Resize the image while maintaining aspect ratio
+        if (width > height) {
+          if (width > MAX_DIMENSION) {
+            height = Math.round(height * (MAX_DIMENSION / width));
+            width = MAX_DIMENSION;
+          }
+        } else {
+          if (height > MAX_DIMENSION) {
+            width = Math.round(width * (MAX_DIMENSION / height));
+            height = MAX_DIMENSION;
+          }
+        }
+
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+
+        if (!ctx) {
+          return reject(new Error('Could not get canvas context'));
+        }
+        
+        ctx.drawImage(img, 0, 0, width, height);
+
+        // Convert canvas to a base64 string in JPEG format
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.9); // 90% quality
+        const base64 = dataUrl.split(',')[1];
+        
+        resolve({ base64, mimeType: 'image/jpeg' });
       };
-      reader.readAsDataURL(currentFile);
-    }
-  }, [onFileSelect]);
-
-  const { getRootProps, getInputProps, isDragActive } = useDropzone({
-    onDrop,
-    accept: { 'image/*': ['.jpeg', '.jpg', '.png', '.webp'] },
-    multiple: false,
+      img.onerror = (error) => reject(new Error("Failed to load image for processing."));
+    };
+    reader.onerror = (error) => reject(new Error("Failed to read file."));
   });
+};
 
-  const handleRemoveImage = (e: React.MouseEvent) => {
-    e.stopPropagation();
+
+export const ImageUploader: React.FC<ImageUploaderProps> = ({ id, title, onImageChange }) => {
+  const [preview, setPreview] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleFileChange = useCallback(async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (file) {
+      try {
+        setPreview(URL.createObjectURL(file));
+        const { base64, mimeType } = await processImage(file);
+        onImageChange({ file, base64, mimeType });
+      } catch (error) {
+        console.error("Error processing image:", error);
+        // Optionally, display an error to the user
+        resetImage(null);
+      }
+    }
+  }, [onImageChange]);
+
+  const resetImage = (e: React.MouseEvent | null) => {
+    e?.stopPropagation();
     setPreview(null);
-    onFileSelect(null);
+    onImageChange({ file: null, base64: null, mimeType: null });
+    if(fileInputRef.current) {
+        fileInputRef.current.value = "";
+    }
   };
 
   return (
-    <div className="w-full p-6 space-y-4 bg-white/70 backdrop-blur-sm rounded-2xl shadow-lg border border-slate-200/50">
-      <h2 className="text-xl font-semibold text-center text-slate-700">{title}</h2>
-      <div
-        {...getRootProps()}
-        className={`relative p-4 aspect-[4/5] border-2 border-dashed rounded-xl flex items-center justify-center text-center cursor-pointer transition-colors duration-300
-        ${isDragActive ? 'border-indigo-500 bg-indigo-50' : 'border-slate-300 hover:border-indigo-400 bg-slate-50/50'}`}
+    <div className="w-full">
+      <label
+        htmlFor={id}
+        className="relative flex flex-col items-center justify-center w-full aspect-square bg-slate-800 border-2 border-dashed border-slate-600 rounded-xl cursor-pointer hover:bg-slate-700 hover:border-brand-secondary transition-colors duration-300 group"
       >
-        <input {...getInputProps()} />
         {preview ? (
-            <div className='w-full h-full'>
-                <img src={preview} alt="Preview" className="w-full h-full object-contain rounded-md" />
-                <button onClick={handleRemoveImage} className="absolute -top-3 -right-3 p-0 bg-white text-slate-600 hover:text-red-500 rounded-full transition-transform hover:scale-110 shadow-md">
-                  <XCircleIcon className="w-8 h-8"/>
-                </button>
-            </div>
+          <>
+            <img src={preview} alt="Preview" className="w-full h-full object-cover rounded-xl" />
+            <button 
+                onClick={resetImage} 
+                className="absolute top-2 right-2 p-1 bg-black bg-opacity-50 rounded-full text-white hover:bg-opacity-75 transition-all"
+                aria-label="Remove image"
+            >
+              <XCircleIcon />
+            </button>
+          </>
         ) : (
-          <div className="flex flex-col items-center justify-center text-slate-500 pointer-events-none">
-            <UploadIcon className="w-12 h-12 mb-3 text-slate-400" />
-            {isDragActive ? (
-              <p>将图片拖到此处</p>
-            ) : (
-              <p>拖拽或点击上传</p>
-            )}
-             <p className="text-xs mt-1 text-slate-400">支持 JPG, PNG, WEBP</p>
+          <div className="flex flex-col items-center justify-center pt-5 pb-6 text-center px-4">
+            <UploadIcon />
+            <p className="mb-2 text-sm text-slate-400 font-semibold">{title}</p>
+            <p className="text-xs text-slate-500">点击或拖拽上传</p>
           </div>
         )}
-      </div>
+        <input id={id} ref={fileInputRef} type="file" accept="image/png, image/jpeg, image/webp, image/heic, image/heif" className="hidden" onChange={handleFileChange} />
+      </label>
     </div>
   );
 };
-
-export default ImageUploader;
